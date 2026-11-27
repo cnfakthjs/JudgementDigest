@@ -165,6 +165,40 @@ class TestHardWraps(unittest.TestCase):
                                ("evidence", "㈠被告於偵查"), ("court", "三、論罪科刑")])
 
 
+
+class TestStatuteItems(unittest.TestCase):
+    """引用法條的款次不是法院自己的段落編號，不切（v0.8c 抽查 9031、9206、9232）。"""
+
+    def split(self, text):
+        from retrieval.criminal_guides import _paragraphs
+        return [p[:8] for p in _paragraphs(text)]
+
+    def test_items_inside_quotes(self):
+        text = ("一、按修正前規定：「本條例所稱兒童或少年性剝削，指下列行為之一者：一、使兒童或少年為有對價之性交或猥褻行為。"
+                "二、利用兒童或少年從事坐檯陪酒。三、拍攝、製造、散布兒童或少年之性影像。」。二、經比較新舊法，修正後規定較有利於被告。")
+        self.assertEqual(self.split(text), ["一、按修正前規定", "二、經比較新舊法"])
+
+    def test_listed_items_without_quotes(self):
+        text = ("㈢按建築法第9條規定，本法所稱建造，係指下列行為：一、新建：為新建造之建築物者。二、增建：於原建築物增加其面積或高度者。"
+                "三、改建：將建築物之一部分拆除改造者。㈣經查，被告所為係屬增建。")
+        self.assertEqual(self.split(text), ["㈢按建築法第9條", "㈣經查，被告所為"])
+
+    def test_long_intro_and_court_heading_after_items(self):
+        text = ("㈣受2年以下有期徒刑、拘役或罰金之宣告，而有下列情形之一，認以暫不執行為適當者，得宣告2年以上5年以下之緩刑，"
+                "其期間自裁判確定之日起算：一、未曾因故意犯罪受有期徒刑以上刑之宣告者。二、前因故意犯罪受有期徒刑以上刑之宣告，"
+                "執行完畢或赦免後，5年以內未曾因故意犯罪受有期徒刑以上刑之宣告者。㈤查被告未曾受有期徒刑以上刑之宣告，爰宣告緩刑2年。")
+        self.assertEqual(self.split(text), ["㈣受2年以下有期", "㈤查被告未曾受有"])
+
+    def test_court_headings_still_split(self):
+        text = ("三、論罪科刑：㈠核被告所為，係犯刑法第320條第1項之竊盜罪。㈡爰審酌被告犯後坦承犯行等一切情狀，量處如主文所示之刑。"
+                "四、沒收：被告竊得之安全帽已發還，不予宣告沒收。")
+        self.assertEqual(self.split(text), ["三、論罪科刑：㈠", "㈡爰審酌被告犯後", "四、沒收：被告竊"])
+
+    def test_unclosed_quote_does_not_swallow_the_rest(self):
+        text = "一、被告辯稱：「我沒有偷" + "東西" * 350 + "。二、經查，被告所辯不足採。三、爰審酌被告犯後態度，量處如主文。"
+        self.assertEqual(self.split(text)[-2:], ["二、經查，被告所", "三、爰審酌被告犯"])
+
+
 class TestSentences(unittest.TestCase):
     def verdict(self, text):
         return sentences([{"function": "verdict", "text": text, "part": None}])

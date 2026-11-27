@@ -1,5 +1,5 @@
 """
-以 Claude API 標註 sample.py（民事，手冊 v0.6、prompt p6.0）或 sample_criminal.py（刑事，手冊 v0.8c、prompt p6.2c）
+以 Claude API 標註 sample.py（民事，手冊 v0.6、prompt p6.0）或 sample_criminal.py（刑事，手冊 v0.9c、prompt p6.3c）
 抽出的段落，寫入 annotations 表。
 刑民自動判斷：資料庫的 batch 全部以 criminal 開頭就用刑事的 prompt 與標籤，否則用民事；也可用 --domain 指定。
 

@@ -314,7 +314,11 @@ class TestCriminalVersion(unittest.TestCase):
             export(db, sheet, n_per_label=25, seed=1)
             wb = load_workbook(sheet)
             self.assertEqual(wb["EV"].max_row - 1, 0)                 # p6.0 的標註不混進來
-            self.assertEqual(wb["SUB"].max_row - 1, 12)
+            self.assertEqual(wb["SUB"].max_row - 1, 10)               # v0.9c：SUB 只抽 10 個做回歸檢查
+            wb.close()
+            export(db, sheet, n_per_label=25, seed=1, full=True)
+            wb = load_workbook(sheet)
+            self.assertEqual(wb["SUB"].max_row - 1, 12)               # --full：抽滿
             self.assertIn(CUR_PROMPT, wb["填寫說明"].cell(1, 1).value)
             wb.close()
 
@@ -407,7 +411,7 @@ class TestCueSample(unittest.TestCase):
             with closing(sqlite3.connect(cases)) as con:
                 con.execute("UPDATE full_text SET text = ? WHERE text != ''", (text,))
                 con.commit()
-            meta = build_criminal(cases, db, n=10, seed=3, n_cue=5)
+            meta = build_criminal(cases, db, n=10, seed=3, n_cue=5, cue_labels=("PROC", "ADM"))
             self.assertEqual(meta["by_batch"], {"criminal-random": 10, "criminal-cue:PROC": 5, "criminal-cue:ADM": 5})
             rows = read(db, "SELECT batch, para_text, case_id FROM paragraphs")
             self.assertEqual(len({r[2] for r in rows}), 20)                     # 同一件判決只用一次
@@ -434,6 +438,38 @@ class TestV08cPrompt(unittest.TestCase):
             self.assertIn(text, exp)
         for text in ("累犯分兩步", "罪數的固定公式", "釋字第775號"):
             self.assertNotIn(text, prompts_v6.SYSTEM_CIVIL)
+
+
+class TestV09c(unittest.TestCase):
+    """v0.9c：EV 的 C7 擴大、量刑套語（C11）、EXP 講「人」（C8 細分）；只加抽 EXP；抽查做回歸檢查。"""
+
+    def test_prompt_rules(self):
+        s = prompts_v6.SYSTEM_CRIMINAL
+        ev = s[s.index("【EV 證據評價】"):s.index("【CL 判例援引】")]
+        for text in ("業據被告陳明在卷", "實無從認定被告有犯罪所得", "頗有悔意", "足認被告所付出之清理費用"):
+            self.assertIn(text, ev)
+        sent = s[s.index("【SENT 量刑審酌】"):s.index("【EV 證據評價】")]
+        self.assertIn("量刑套語", sent)
+        self.assertIn("量刑套語", s[s.index("【NONE 無論證】"):])
+        exp = s[s.index("刑事補充"):s.index("【NONE 無論證】")]
+        for text in ("EXP 判準：講的是「人」", "酒精進入肝臟", "邏輯矛盾", "悠遊卡"):
+            self.assertIn(text, exp)
+        for text in ("量刑套語", "EXP 判準：講的是「人」", "業據被告陳明在卷"):
+            self.assertNotIn(text, prompts_v6.SYSTEM_CIVIL)
+
+    def test_exp_cue_is_the_default(self):
+        text = FULL_TEXT.replace(
+            "三、據上論斷", "三、衡情一般人當不致甘冒偽證罪責而誣陷他人，證人所述堪以採信。\n四、據上論斷")
+        with tempfile.TemporaryDirectory() as tmp:
+            cases, db = Path(tmp) / "cases.sqlite", Path(tmp) / "a.sqlite"
+            make_fulltext_db(cases, n=30)
+            with closing(sqlite3.connect(cases)) as con:
+                con.execute("UPDATE full_text SET text = ? WHERE text != ''", (text,))
+                con.commit()
+            meta = build_criminal(cases, db, n=10, seed=3, n_cue=5)
+            self.assertEqual(meta["by_batch"], {"criminal-random": 10, "criminal-cue:EXP": 5})
+            for batch, para in read(db, "SELECT batch, para_text FROM paragraphs WHERE batch LIKE 'criminal-cue:%'"):
+                self.assertRegex(para, CUE["EXP"])
 
 
 if __name__ == "__main__":

@@ -54,6 +54,8 @@ QUOTE_VERDICTS = ("正確", "錯誤")
 HEADERS = ["sample_id", "批次", "標籤", "傾向／方向", "引文", "完整範圍", "待標段落", "線索", "引文錨定（自動）",
            "判決結果比對", "判定", "引文判定", "備註"]
 COL = {h: i for i, h in enumerate(HEADERS)}
+# 刑事 v0.9c：RULE、SUB、PROC、ADM 在 v0.8c 已達標、規則沒改，只抽 10 個做回歸檢查；EV、EXP、SENT 規則有改，抽滿
+REGRESSION_CRIMINAL = {"RULE": 10, "SUB": 10, "PROC": 10, "ADM": 10}
 
 
 def pick_version(con: sqlite3.Connection, domain: str) -> tuple:
@@ -134,7 +136,8 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple:
     return (centre - half, centre + half)
 
 
-def export(db: Path, out: Path, n_per_label: int, seed: int) -> None:
+def export(db: Path, out: Path, n_per_label: int, seed: int, full: bool = False) -> None:
+    """full：每類都抽滿 n_per_label（不做回歸檢查的減量）。"""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -157,7 +160,7 @@ def export(db: Path, out: Path, n_per_label: int, seed: int) -> None:
         print("還沒有任何標註結果。")
         return
     labels = CHECK_LABELS_CRIMINAL if criminal else CHECK_LABELS
-    regression = {} if criminal else REGRESSION
+    regression = {} if full else (REGRESSION_CRIMINAL if criminal else REGRESSION)
     sample_batch = "criminal-random" if criminal else "random"
     if criminal:
         print("== 刑事（判決導讀的證據、論罪科刑段落）==")
@@ -220,7 +223,10 @@ def export(db: Path, out: Path, n_per_label: int, seed: int) -> None:
          "ADM＝證據能力（傳聞法則、同意作為證據），"
          "和「可不可信」的 EV 分開。只說證人無恩怨、無構陷動機 → EV，不是 EXP；罪數公式、只有「悖於常情」標記詞 → 不是 EXP。"
          "法律效果段落裡只列出前案紀錄表、函文 → 不是 EV。"
-         "EV 的傾向是有利被告／不利被告／中性。每類都抽 25 個。")
+         "EV 的傾向是有利被告／不利被告／中性。"
+         "v0.9c：法律效果段落裡的事實來源句（業據⋯⋯陳明在卷）不是 EV；只泛稱§57、一切情狀的量刑套語不是 SENT；"
+         "物的性質、生理知識是 UNC、邏輯矛盾是 EV，講「人」的一般經驗才是 EXP。"
+         "EV、EXP、SENT 各抽 25 個；RULE、SUB、PROC、ADM 各 10 個（回歸檢查）。")
         if criminal else "RULE、CONCL 規則沒改，只抽 10 個做回歸檢查。",
         "EV 的「傾向／方向」後面括號是 basis（明示評價／依證據推論）。",
         "只判斷「標出來的對不對」，不用找漏標的。",
@@ -326,11 +332,12 @@ def main():
     e.add_argument("--out", type=Path, default=OUT_DIR / SHEET_NAME)
     e.add_argument("--n", type=int, default=25, help="每個標籤最多抽幾段")
     e.add_argument("--seed", type=int, default=20261110)
+    e.add_argument("--full", action="store_true", help="每類都抽滿 --n 個，不做回歸檢查的減量")
     s = sub.add_parser("score")
     s.add_argument("--sheet", type=Path, default=OUT_DIR / SHEET_NAME)
     args = ap.parse_args()
     if args.cmd == "export":
-        export(args.db, args.out, args.n, args.seed)
+        export(args.db, args.out, args.n, args.seed, args.full)
     else:
         score(args.sheet)
 

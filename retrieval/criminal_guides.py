@@ -139,10 +139,62 @@ def _unwrap(b: Dict) -> str:
     return out
 
 
+_CN_DIGIT = {c: i for i, c in enumerate("一二三四五六七八九", 1)}
+_ENUM_INTRO_RE = re.compile(r"下列[^。；]{0,80}[：:]$")
+
+
+def _head_number(text: str, pos: int) -> tuple:
+    """pos 處段落編號的（格式, 數值）：「三、」→（"、", 3）、「㈣」→（"㈠", 4）、「（二）」→（"（）", 2）。"""
+    m = re.match(r"([一二三四五六七八九十]{1,3})、|([㈠-㈩])|[(（]([一二三四五六七八九十]{1,3})[)）]", text[pos:pos + 6])
+    if not m:
+        return None, None
+    if m.group(2):
+        return "㈠", ord(m.group(2)) - ord("㈠") + 1
+    word = m.group(1) or m.group(3)
+    tens, _, ones = word.partition("十")
+    value = (_CN_DIGIT.get(tens, 1) * 10 + _CN_DIGIT.get(ones, 0)) if "十" in word else _CN_DIGIT.get(word, 0)
+    return ("、" if m.group(1) else "（）"), value
+
+
+def _split_points(text: str) -> List[int]:
+    """可以切段的位置。_HEAD_SPLIT 找到的編號裡，兩種不是法院自己的段落編號，不切：
+    - 在「」『』引號裡（引用的法條：「⋯⋯三、拍攝、製造⋯⋯」）；引號開了 600 字還沒關，當作原文漏了「」」
+    - 法條列舉的款次：冒號前 80 字內有「下列」（「有下列情形之一者：」），後面從一開始、同一種格式而且連號的編號；
+      遇到別種格式或不連號的編號（法院自己的「㈤」）才恢復切段
+    v0.8c 抽查：9031、9206、9232 的單位都從法條款次切開。"""
+    points, depth, last, enum, opened = [], 0, 0, None, 0
+    for m in _HEAD_SPLIT.finditer(text):
+        pos = m.start()
+        if pos == 0:
+            continue
+        chunk = text[last:pos]
+        before = depth
+        depth = max(0, depth + chunk.count("「") + chunk.count("『") - chunk.count("」") - chunk.count("』"))
+        if depth and not before:
+            opened = last + max(chunk.find("「"), chunk.find("『"), 0)
+        if depth and pos - opened > 600:   # 引號開了 600 字還沒關：原文漏了「」」，當作沒有引號
+            depth = 0
+        last = pos
+        if depth:
+            continue
+        style, value = _head_number(text, pos)
+        if enum and style == enum[0] and value == enum[1]:
+            enum = (style, value + 1)
+            continue
+        enum = None
+        if value == 1 and _ENUM_INTRO_RE.search(text[max(0, pos - 100):pos]):
+            enum = (style, 2)
+            continue
+        points.append(pos)
+    return points
+
+
 def _paragraphs(text: str, max_len: int = 600) -> List[str]:
-    """依段落編號切開；沒有編號的長段落，在句號處切成不超過 max_len 字的段。"""
+    """依段落編號切開（法條引文與列舉的款次不切，見 _split_points）；沒有編號的長段落，在句號處切成不超過 max_len 字的段。"""
+    text = text or ""
+    cuts = [0] + _split_points(text) + [len(text)]
     parts, carry = [], ""
-    for p in (p for p in _HEAD_SPLIT.split(text or "") if p.strip()):
+    for p in (p for p in (text[a:b] for a, b in zip(cuts, cuts[1:])) if p.strip()):
         if len(p.strip()) <= 8:          # 只有編號的短段（「六、經查：」）併到下一段
             carry += p
         else:

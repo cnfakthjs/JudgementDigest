@@ -2,7 +2,7 @@
 刑事抽樣：從刑事檢索庫的判決導讀段落抽出待標段落，
 寫成和民事 sample.py 相同格式的 annotation.sqlite，後面的 annotate.py、spot_check.py 可以直接沿用。
 
-    python -m annotation.sample_criminal --n 300 --cue-n 30 --exclude <v1、v2 的 annotation.sqlite>   # 讀 artifacts/retrieval_criminal_v1/cases.sqlite
+    python -m annotation.sample_criminal --n 300 --cue-n 30 --cue-labels EXP --exclude <先前各輪的 annotation.sqlite>   # 讀 artifacts/retrieval_criminal_v1/cases.sqlite
     python -m annotation.annotate --db <輸出的 annotation.sqlite> --run-no 1 --limit 1   # 自動用刑事的 prompt
 
 做法：
@@ -17,7 +17,8 @@
   - unit_start／unit_end 記錄本段在導讀段落裡的範圍（就是整段），para_idx 是導讀段落的序號，
     之後要把引文對回刑事導讀頁，用 para_idx 加上引文在段內的位置即可
   - batch 寫成 criminal-random，annotate.py 看到就自動改用刑事的 prompt 與標籤
-  - 加抽（v0.8c）：隨機樣本裡太少的標籤（PROC、ADM），另外從有線索的段落各抽 --cue-n 件，batch＝criminal-cue:PROC 等。
+  - 加抽（v0.8c）：隨機樣本裡太少的標籤，另外從有線索的段落各抽 --cue-n 件，batch＝criminal-cue:PROC 等；
+    --cue-labels 指定要加抽哪幾類（v0.8c 加抽 PROC、ADM，都已達標；v0.9c 只加抽 EXP）。
     加抽批只用來估精確度（抽查表在隨機樣本不夠時從這裡補），不能拿來估標籤比例；spot_check 的比例只算 criminal-random
 """
 import argparse
@@ -37,8 +38,8 @@ import config  # noqa: E402
 from annotation.sample import CONTEXT, MIN_LEN, SCHEMA, position_of, used_case_ids  # noqa: E402
 from retrieval.criminal_guides import segment  # noqa: E402
 
-# v1：p6.0 試做（含附件 bug）；v2：p6.1c；v3 起 p6.2c，抽樣時用 --exclude 排除先前各輪用過的判決
-OUT_NAME = "annotation_criminal_v3"
+# v1：p6.0 試做（含附件 bug）；v2：p6.1c；v3：p6.2c；v4 起 p6.3c，抽樣時用 --exclude 排除先前各輪用過的判決
+OUT_NAME = "annotation_criminal_v4"
 CASES_NAME = "retrieval_criminal_v1"
 FIRST_ID = 9001            # 刑事從 9001 起，和民事的 sample_id 分開
 FUNCTIONS = ("evidence", "court")
@@ -57,8 +58,10 @@ PROSECUTOR = re.compile(
     r"本署|(?:^|[一二三四五六七八九十]、)所犯法條[：:]|(?:^|\n)證據並所犯法條(?!欄)|詢據被告|不另為不起訴處分|此致"
     r"|係犯(?![「『])[^。；「」『』]{0,60}?罪嫌(?![」』])|(?:犯嫌|罪嫌)(?:應|洵|足|已|均)?(?:堪|可)以?認定")
 
-# 加抽的線索（v0.8c）：v0.7c 隨機 300 段只有 PROC 11 段、ADM 9 段，全對也到不了 95% 下界 0.80（至少要 16 個全對）
+# 加抽的線索（v0.8c）：v0.7c 隨機 300 段只有 PROC 11 段、ADM 9 段，全對也到不了 95% 下界 0.80（至少要 16 個全對）。
+# v0.9c 加 EXP：v0.8c 隨機 300 段只有 7 段標 EXP，抽查表只有 8 列
 CUE = {
+    "EXP": re.compile(r"衡情|常情|經驗法則|論理法則|社會通念|一般人|事理之常"),
     "PROC": re.compile(r"不受理|免訴|撤回(?:其)?告訴|上訴(?:為)?不合法|逾期|審判範圍|簡式審判程序|不另為無罪之?諭知"),
     "ADM": re.compile(r"證據能力|傳聞|第159條之[1-5]|同意(?:作為|作|列為)證據|不得作為證據|得為證據|任意性"),
 }
@@ -126,14 +129,15 @@ def paragraphs_of(src: sqlite3.Connection, case_id: int) -> tuple:
     return (json.loads(g[0]) if g else []), c[1], c[2]
 
 
-def draw(src: sqlite3.Connection, n: int, seed: int, exclude: set = frozenset(), n_cue: int = 0) -> tuple:
+def draw(src: sqlite3.Connection, n: int, seed: int, exclude: set = frozenset(), n_cue: int = 0,
+         cue_labels=("EXP",)) -> tuple:
     """隨機排序有導讀段落的判決，依序取到 n 件有可標段落的；再接著往下，每個加抽標籤各取 n_cue 件有線索段落的。
     同一件判決只會被用一次。回傳 (單位列, 候選判決數)。"""
     ids = [i for i in candidates(src) if i not in exclude]
     rng = random.Random(seed)
     rng.shuffle(ids)
     rows = []
-    want = {label: n_cue for label in CUE}
+    want = {label: n_cue for label in cue_labels}
     for case_id in ids:
         if len(rows) >= n and not any(want.values()):
             break
@@ -155,9 +159,9 @@ def draw(src: sqlite3.Connection, n: int, seed: int, exclude: set = frozenset(),
 
 
 def build_sample(cases_db: Path, out_db: Path, n: int, seed: int, exclude: set = frozenset(),
-                 first_id: int = FIRST_ID, n_cue: int = 0) -> dict:
+                 first_id: int = FIRST_ID, n_cue: int = 0, cue_labels=("EXP",)) -> dict:
     with closing(sqlite3.connect(f"file:{cases_db}?mode=ro", uri=True)) as src:
-        rows, n_source = draw(src, n, seed, exclude, n_cue)
+        rows, n_source = draw(src, n, seed, exclude, n_cue, cue_labels)
     out_db.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(out_db)) as out:
         out.executescript(SCHEMA)
@@ -182,7 +186,7 @@ def build_sample(cases_db: Path, out_db: Path, n: int, seed: int, exclude: set =
         batches[r["batch"]] = batches.get(r["batch"], 0) + 1
     meta = {"source": str(cases_db), "domain": "criminal", "seed": seed, "n": len(rows), "n_source_cases": n_source,
             "n_excluded_cases": len(exclude), "functions": list(FUNCTIONS), "by_function": funcs,
-            "by_batch": batches, "cue_patterns": {k: v.pattern for k, v in CUE.items()},
+            "by_batch": batches, "cue_patterns": {k: CUE[k].pattern for k in cue_labels} if n_cue else {},
             "first_id": first_id, "created_at": datetime.now().isoformat(), "git_commit": commit}
     (out_db.parent / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
@@ -193,8 +197,10 @@ def main():
     ap.add_argument("--cases", type=Path, default=config.ARTIFACTS_DIR / CASES_NAME / "cases.sqlite")
     ap.add_argument("--out", type=Path, default=config.ARTIFACTS_DIR / OUT_NAME / "annotation.sqlite")
     ap.add_argument("--n", type=int, default=300, help="抽幾件判決（每件一段）")
-    ap.add_argument("--seed", type=int, default=20261125)
-    ap.add_argument("--cue-n", type=int, default=30, help="PROC、ADM 各加抽幾件有線索的段落（0＝不加抽）")
+    ap.add_argument("--seed", type=int, default=20261127)
+    ap.add_argument("--cue-n", type=int, default=30, help="每個加抽標籤各抽幾件有線索的段落（0＝不加抽）")
+    ap.add_argument("--cue-labels", nargs="+", default=["EXP"], choices=sorted(CUE),
+                    help="要加抽的標籤（預設只有 EXP；PROC、ADM 在 v0.8c 已達標）")
     ap.add_argument("--exclude", type=Path, nargs="*", default=[], help="先前刑事各輪的 annotation.sqlite，排除用過的判決")
     args = ap.parse_args()
     if not args.cases.exists():
@@ -206,7 +212,7 @@ def main():
                              f"目前的表：{sorted(found)}")
         print(f"段落來源：{'full_text（遮名原文，當場分段）' if 'full_text' in found else 'guides（舊版導讀表）'}")
     exclude = used_case_ids(args.exclude) if args.exclude else set()
-    meta = build_sample(args.cases, args.out, args.n, args.seed, exclude, n_cue=args.cue_n)
+    meta = build_sample(args.cases, args.out, args.n, args.seed, exclude, n_cue=args.cue_n, cue_labels=args.cue_labels)
     print(f"抽出 {meta['n']} 段（候選判決 {meta['n_source_cases']:,} 件，排除 {meta['n_excluded_cases']} 件）")
     print(f"批次：{meta['by_batch']}")
     print(f"段落功能：{meta['by_function']}")
