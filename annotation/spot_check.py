@@ -58,12 +58,13 @@ COL = {h: i for i, h in enumerate(HEADERS)}
 REGRESSION_CRIMINAL = {"RULE": 10, "SUB": 10, "PROC": 10, "ADM": 10}
 
 
-def pick_version(con: sqlite3.Connection, domain: str) -> tuple:
-    """(手冊版本, prompt 版本)：資料庫裡有該領域目前的 prompt 版本就用它；
-    沒有而且只有一個版本時用那一個（例如刑事 v1 是 p6.0 標的），兩者都不是就用目前版本。"""
+def pick_version(con: sqlite3.Connection, domain: str, wanted: str = None) -> tuple:
+    """(手冊版本, prompt 版本)：有指定（--prompt-version）就用指定的；否則資料庫裡有該領域目前的 prompt 版本就用它；
+    沒有就用最近一次標註的版本（例如刑事 v1 只有 p6.0；v3 同時有 p6.2c、p6.3c），一筆標註都沒有才用目前版本。"""
     current = DOMAINS[domain]["prompt_version"]
     found = [r[0] for r in con.execute("SELECT DISTINCT prompt_version FROM annotations")]
-    version = current if current in found or len(found) != 1 else found[0]
+    latest = con.execute("SELECT prompt_version FROM annotations ORDER BY id DESC LIMIT 1").fetchone()
+    version = wanted or (current if current in found or not latest else latest[0])
     row = con.execute("SELECT manual_version FROM annotations WHERE prompt_version = ? LIMIT 1", (version,)).fetchone()
     return (row[0] if row else DOMAINS[domain]["manual_version"]), version
 
@@ -136,8 +137,8 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple:
     return (centre - half, centre + half)
 
 
-def export(db: Path, out: Path, n_per_label: int, seed: int, full: bool = False) -> None:
-    """full：每類都抽滿 n_per_label（不做回歸檢查的減量）。"""
+def export(db: Path, out: Path, n_per_label: int, seed: int, full: bool = False, prompt_version: str = None) -> None:
+    """full：每類都抽滿 n_per_label（不做回歸檢查的減量）；prompt_version：指定要匯出的版本（預設見 pick_version）。"""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -146,7 +147,7 @@ def export(db: Path, out: Path, n_per_label: int, seed: int, full: bool = False)
     with closing(sqlite3.connect(db)) as con:   # Windows 不能刪除還開著的資料庫檔
         domain = detect_domain(con)
         criminal = domain == "criminal"
-        manual_version, prompt_version = pick_version(con, domain)
+        manual_version, prompt_version = pick_version(con, domain, prompt_version)
         runs = load_runs(con, prompt_version)
         concl = concl_directions(con, prompt_version)
         paras = {r[0]: r[1:3] for r in con.execute("SELECT sample_id, batch, para_text FROM paragraphs")}
@@ -157,7 +158,7 @@ def export(db: Path, out: Path, n_per_label: int, seed: int, full: bool = False)
                                     (prompt_version,)):
             first_basis.setdefault(sid, sub)
     if not runs:
-        print("還沒有任何標註結果。")
+        print(f"還沒有 {prompt_version} 的標註結果。")
         return
     labels = CHECK_LABELS_CRIMINAL if criminal else CHECK_LABELS
     regression = {} if full else (REGRESSION_CRIMINAL if criminal else REGRESSION)
@@ -333,11 +334,12 @@ def main():
     e.add_argument("--n", type=int, default=25, help="每個標籤最多抽幾段")
     e.add_argument("--seed", type=int, default=20261110)
     e.add_argument("--full", action="store_true", help="每類都抽滿 --n 個，不做回歸檢查的減量")
+    e.add_argument("--prompt-version", default=None, help="同一個資料庫有好幾個版本時，指定要匯出哪一個（例如 p6.2c）")
     s = sub.add_parser("score")
     s.add_argument("--sheet", type=Path, default=OUT_DIR / SHEET_NAME)
     args = ap.parse_args()
     if args.cmd == "export":
-        export(args.db, args.out, args.n, args.seed, args.full)
+        export(args.db, args.out, args.n, args.seed, args.full, args.prompt_version)
     else:
         score(args.sheet)
 

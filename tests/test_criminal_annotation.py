@@ -472,5 +472,53 @@ class TestV09c(unittest.TestCase):
                 self.assertRegex(para, CUE["EXP"])
 
 
+class TestV010c(unittest.TestCase):
+    """v0.10c：C7 的「沒有證據 → SUB」只限沒收；標錯資料庫的防呆；抽查自動挑最近的版本。"""
+
+    def test_prompt_scope_of_no_evidence(self):
+        s = prompts_v6.SYSTEM_CRIMINAL
+        ev = s[s.index("【EV 證據評價】"):s.index("【CL 判例援引】")]
+        self.assertIn("這條只限沒收、追徵的要件", ev)
+        self.assertIn("基於營利之意圖", s[s.index("【NONE 無論證】"):])
+
+    def run_annotate(self, db, *extra):
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+        from annotation import annotate
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["annotate", "--db", str(db), "--dry-run", *extra]), redirect_stdout(out):
+            annotate.main()
+        return out.getvalue()
+
+    def test_wrong_database_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cases, db = Path(tmp) / "cases.sqlite", Path(tmp) / "a.sqlite"
+            make_criminal_db(cases)
+            build_criminal(cases, db, n=3, seed=2)
+            with closing(sqlite3.connect(db)) as con:
+                sid = con.execute("SELECT MIN(sample_id) FROM paragraphs").fetchone()[0]
+                con.execute(INSERT, (sid, "m", 1, "SUB", None, "q", None, 1, None, "v0.8c", "p6.2c", "{}", "t"))
+                con.commit()
+            with self.assertRaises(SystemExit) as e:
+                self.run_annotate(db)
+            self.assertIn("可能標錯資料庫", str(e.exception))
+            self.assertIn(CUR_PROMPT, self.run_annotate(db, "--allow-mixed"))
+            with closing(sqlite3.connect(db)) as con:                      # 已有目前版本：照常續標
+                con.execute(INSERT, (sid, "m", 1, "SUB", None, "q", None, 1, None, CUR_MANUAL, CUR_PROMPT, "{}", "t"))
+                con.commit()
+            self.assertIn("資料庫：", self.run_annotate(db))
+
+    def test_pick_latest_when_current_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "a.sqlite"
+            with closing(sqlite3.connect(db)) as con:
+                con.executescript(SCHEMA)
+                con.execute(INSERT, (9001, "m", 1, "SUB", None, "q", None, 1, None, "v0.8c", "p6.2c", "{}", "t"))
+                con.execute(INSERT, (9001, "m", 1, "SUB", None, "q", None, 1, None, "v0.9c", "p6.3c", "{}", "t"))
+                self.assertEqual(pick_version(con, "criminal"), ("v0.9c", "p6.3c"))          # 最近一次
+                self.assertEqual(pick_version(con, "criminal", "p6.2c"), ("v0.8c", "p6.2c"))  # 指定
+
+
 if __name__ == "__main__":
     unittest.main()

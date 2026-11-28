@@ -1,5 +1,5 @@
 """
-以 Claude API 標註 sample.py（民事，手冊 v0.6、prompt p6.0）或 sample_criminal.py（刑事，手冊 v0.9c、prompt p6.3c）
+以 Claude API 標註 sample.py（民事，手冊 v0.6、prompt p6.0）或 sample_criminal.py（刑事，手冊 v0.10c、prompt p6.4c）
 抽出的段落，寫入 annotations 表。
 刑民自動判斷：資料庫的 batch 全部以 criminal 開頭就用刑事的 prompt 與標籤，否則用民事；也可用 --domain 指定。
 
@@ -231,6 +231,8 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=4000, help="thinking 區塊也算輸出 token，要留足夠空間")
     ap.add_argument("--domain", choices=sorted(DOMAINS), default=None,
                     help="civil／criminal；不給就依資料庫自動判斷（sample_criminal.py 抽的是刑事）")
+    ap.add_argument("--allow-mixed", action="store_true",
+                    help="資料庫已有別的 prompt 版本的標註、還沒有目前版本時，仍然繼續（預設停下來，避免標錯資料庫）")
     ap.add_argument("--reparse", action="store_true",
                     help="不呼叫 API：用已存的原始回應重新解析之前的 PARSE_ERROR，並依目前規則重新判定所有引文")
     args = ap.parse_args()
@@ -246,6 +248,13 @@ def main():
     system = DOMAINS[domain]["system"]
     manual_version, prompt_version = DOMAINS[domain]["manual_version"], DOMAINS[domain]["prompt_version"]
     print(f"領域：{'刑事' if domain == 'criminal' else '民事'}（手冊 {manual_version}、prompt {prompt_version}）")
+    print(f"資料庫：{args.db}")
+    # 刑事 v0.9c 試做時把 p6.3c 標進了 v3 的資料庫（v3 已有 p6.2c），v4 一段都沒標。
+    # 資料庫裡只有別的版本、還沒有目前版本，多半是 --db 給錯了：先停下來
+    versions = [r[0] for r in con.execute("SELECT DISTINCT prompt_version FROM annotations")]
+    if versions and prompt_version not in versions and not args.allow_mixed:
+        raise SystemExit(f"這個資料庫已有 {', '.join(versions)} 的標註，還沒有 {prompt_version}：可能標錯資料庫了。"
+                         f"確定要在同一個資料庫用新版本再標一次，請加 --allow-mixed")
     done = {r[0] for r in con.execute(
         "SELECT DISTINCT sample_id FROM annotations WHERE annotator = ? AND run_no = ? AND prompt_version = ?",
         (MODEL, args.run_no, prompt_version))}
